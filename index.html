@@ -1,4 +1,214 @@
-<html>
-  <body bgcolor="yellow">
-  </body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touch ID / Passkey Demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: grid; place-items: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #2b3a67 0%, #0f1420 60%);
+    color: #e8ecf5; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 380px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 22px;
+    padding: 36px 28px 30px;
+    text-align: center;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .icon { font-size: 46px; line-height: 1; margin-bottom: 14px; }
+  h1 { font-size: 22px; margin: 0 0 8px; font-weight: 650; letter-spacing: -.2px; }
+  .sub { font-size: 14px; line-height: 1.5; color: #9aa6bd; margin: 0 0 24px; }
+  button#enterBtn {
+    width: 100%; padding: 15px 18px;
+    font-size: 16px; font-weight: 600; font-family: inherit;
+    color: #fff; border: 0; border-radius: 14px; cursor: pointer;
+    background: linear-gradient(180deg, #4f7cff, #3057e0);
+    box-shadow: 0 8px 20px rgba(63,105,255,.35);
+    transition: transform .12s ease, opacity .2s;
+  }
+  button#enterBtn:hover:not(:disabled) { transform: translateY(-1px); }
+  button#enterBtn:active:not(:disabled) { transform: translateY(1px); }
+  button#enterBtn:disabled { opacity: .55; cursor: default; }
+  .status { min-height: 20px; margin: 16px 0 0; font-size: 13px; color: #9aa6bd; }
+  .status.error { color: #ff8b8b; }
+  .status.ok { color: #6ee7a8; }
+  .reset {
+    display: none; margin-top: 18px; font-size: 12px; color: #7d8aa3;
+    background: none; border: 0; cursor: pointer; text-decoration: underline;
+    font-family: inherit;
+  }
+  .card.success {
+    border-color: rgba(110,231,168,.45);
+    box-shadow: 0 24px 60px rgba(0,0,0,.45), 0 0 0 4px rgba(110,231,168,.08);
+  }
+</style>
+</head>
+<body>
+  <main class="card" id="card">
+    <div class="icon" id="icon">🔐</div>
+    <h1 id="title">Secure Area</h1>
+    <p class="sub" id="sub">
+      Press <strong>Enter</strong> to verify with Touch&nbsp;ID, Windows&nbsp;Hello or a passkey.
+    </p>
+    <button id="enterBtn">Enter</button>
+    <p class="status" id="status"></p>
+    <button class="reset" id="resetBtn">Reset stored credential</button>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const card = $('card'), icon = $('icon'), title = $('title'), sub = $('sub');
+  const btn = $('enterBtn'), status = $('status'), resetBtn = $('resetBtn');
+
+  const STORE_KEY = 'demoCredentialId';
+  const rand = n => crypto.getRandomValues(new Uint8Array(n));
+
+  /* --- base64url helpers (WebAuthn uses ArrayBuffers, storage uses strings) --- */
+  const b64url = {
+    encode(buf) {
+      let s = '';
+      for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+      return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    },
+    decode(str) {
+      const s = str.replace(/-/g, '+').replace(/_/g, '/');
+      const bin = atob(s + '='.repeat((4 - s.length % 4) % 4));
+      return Uint8Array.from(bin, c => c.charCodeAt(0)).buffer;
+    }
+  };
+
+  const setStatus = (msg, cls = '') => {
+    status.textContent = msg;
+    status.className = 'status ' + cls;
+  };
+
+  /* 1️⃣  Create a passkey on this device — this is what triggers Touch ID */
+  async function createPasskey() {
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: rand(32),
+        rp: { name: 'Touch ID Demo' },
+        user: {
+          id: rand(16),
+          name: 'demo@example.com',
+          displayName: 'Demo User'
+        },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },   // ES256
+          { type: 'public-key', alg: -257 }  // RS256
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform', // built-in Touch ID / Windows Hello
+          userVerification: 'required',        // forces biometric / passcode
+          residentKey: 'preferred'
+        },
+        timeout: 60000,
+        attestation: 'none'
+      }
+    });
+
+    localStorage.setItem(STORE_KEY, b64url.encode(cred.rawId));
+    return cred;
+  }
+
+  /* 2️⃣  Ask the device to verify the user — Touch ID / passcode / passkey */
+  async function verifyUser() {
+    const storedId = localStorage.getItem(STORE_KEY);
+
+    const publicKey = {
+      challenge: rand(32),
+      userVerification: 'required',
+      timeout: 60000
+    };
+
+    if (storedId) {
+      publicKey.allowCredentials = [{
+        id: b64url.decode(storedId),
+        type: 'public-key',
+        transports: ['internal', 'hybrid']
+      }];
+    }
+
+    return navigator.credentials.get({ publicKey });
+  }
+
+  /* --- UI states --- */
+  function showSuccess(message) {
+    card.classList.add('success');
+    icon.textContent = '✅';
+    title.textContent = 'Success';
+    sub.textContent = message;
+    btn.style.display = 'none';
+    resetBtn.style.display = 'inline-block';
+    setStatus('Verified at ' + new Date().toLocaleTimeString(), 'ok');
+  }
+
+  function showError(err) {
+    console.error(err);
+    const messages = {
+      NotAllowedError:  'Cancelled or timed out. Press Enter to try again.',
+      InvalidStateError:'This device already has a passkey for this site. Try resetting.',
+      SecurityError:    'Blocked for security reasons. Use https:// or http://localhost.',
+      NotSupportedError:'No compatible authenticator found on this device.'
+    };
+    setStatus(messages[err.name] || ('Error: ' + (err.message || err.name)), 'error');
+  }
+
+  /* --- Main flow --- */
+  async function handleEnter() {
+    if (!window.isSecureContext) {
+      return setStatus('WebAuthn requires HTTPS or http://localhost.', 'error');
+    }
+    if (!window.PublicKeyCredential) {
+      return setStatus('This browser does not support WebAuthn.', 'error');
+    }
+
+    btn.disabled = true;
+    setStatus('Waiting for your device…');
+
+    try {
+      if (localStorage.getItem(STORE_KEY)) {
+        // Already registered → just verify
+        await verifyUser();
+        showSuccess('Your identity was confirmed by this device.');
+      } else {
+        // First time → create a passkey (Touch ID prompt appears here)
+        await createPasskey();
+        showSuccess('Passkey created and your identity was confirmed.');
+      }
+    } catch (err) {
+      showError(err);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', handleEnter);
+
+  // Also trigger with the physical Enter key
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !btn.disabled && btn.style.display !== 'none') {
+      btn.click();
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    localStorage.removeItem(STORE_KEY);
+    location.reload();
+  });
+})();
+</script>
+</body>
 </html>
